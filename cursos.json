@@ -11,56 +11,9 @@
    "name": "Seminário de Obras Públicas 2026",
    "info": "Goiânia-GO · 11, 12 e 13 de novembro de 2026 · 20 horas/aula",
    "dir": "cursos/obras-2026/",
-   "cover": "capa.jpg",
-   "data": "participantes.json",
-   "backs": {
-    "oficinas-a-e-c": "pagina2-oficinas-a-e-c.jpg",
-    "oficinas-a-e-d": "pagina2-oficinas-a-e-d.jpg",
-    "oficinas-b-e-c": "pagina2-oficinas-b-e-c.jpg",
-    "oficinas-b-e-d": "pagina2-oficinas-b-e-d.jpg"
-   },
-   "backLabel": {
-    "oficinas-a-e-c": "Oficinas A e C",
-    "oficinas-a-e-d": "Oficinas A e D",
-    "oficinas-b-e-c": "Oficinas B e C",
-    "oficinas-b-e-d": "Oficinas B e D"
-   },
-   "opening": "Certificamos que",
-   "body": [
-    {
-     "b": false,
-     "t": "participou do "
-    },
-    {
-     "b": true,
-     "t": "SEMINÁRIO EXCELÊNCIA NA CONTRATAÇÃO DE OBRAS PÚBLICAS E SERVIÇOS DE ENGENHARIA 2026"
-    },
-    {
-     "b": false,
-     "t": ", realizado em Goiânia-GO, nos dias 11, 12 e 13 de novembro de 2026, totalizando 20 horas/aula."
-    }
-   ],
-   "date": "Goiânia-GO, 13 de novembro de 2026.",
-   "fileName": "Certificado - Seminário de Obras 2026",
-   "layout": {
-    "cx": 1485,
-    "opening": {
-     "y": 826,
-     "size": 47
-    },
-    "name": {
-     "y": 974,
-     "size": 77.6,
-     "max": 2500
-    },
-    "body": {
-     "y": 1098.5,
-     "size": 47,
-     "lead": 58.8,
-     "max": 2600
-    },
-    "dateGap": 117.4
-   }
+   "lista": "lista.json",
+   "mode": "pdf",
+   "fileName": "Certificado - Seminário de Obras 2026"
   }
  ]
 }
