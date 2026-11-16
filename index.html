@@ -152,6 +152,15 @@ h1 {
 .person { font: inherit; color: var(--ink); background: transparent; border: 0; width: 100%; text-align: left; padding: 0.7rem 0.875rem; min-height: 2.75rem; cursor: pointer; overflow-wrap: anywhere; }
 .person:hover { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .person[aria-current="true"] { font-weight: 700; background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+.people li { display: flex; align-items: stretch; }
+.pick { display: flex; align-items: center; padding: 0 0.25rem 0 0.875rem; cursor: pointer; }
+.pick input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.people .person { flex: 1; min-width: 0; padding-left: 0.625rem; }
+.org { display: block; font-weight: 400; font-size: 0.8125rem; color: var(--muted); margin-top: 0.1rem; }
+.bulk { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; }
+.link-btn { font: inherit; font-size: 0.875rem; font-weight: 600; color: var(--accent); background: transparent; border: 0; padding: 0.4rem 0; min-height: 2.25rem; cursor: pointer; text-decoration: underline; text-underline-offset: 0.2em; }
+.link-btn[disabled] { opacity: 0.5; cursor: default; text-decoration: none; }
+.sel-conta { margin: 0; font-size: 0.875rem; color: var(--muted); }
 .course-meta { margin: 0; font-size: 0.875rem; color: var(--muted); }
 .btn {
   font: inherit;
@@ -277,13 +286,23 @@ h2 {
       </div>
     </fieldset>
     <fieldset class="step" id="step-lista" hidden>
-      <legend class="step-title"><span class="step-n">2</span>Participante</legend>
+      <legend class="step-title"><span class="step-n">2</span>Participantes</legend>
       <div class="field">
         <label for="filtro">Filtrar por nome</label>
         <input id="filtro" type="text" autocomplete="off" spellcheck="false" placeholder="Digite parte do nome">
       </div>
+      <div class="field" id="campo-orgao" hidden>
+        <label for="orgao">Órgão</label>
+        <select id="orgao"></select>
+      </div>
       <p class="course-meta" id="lista-conta" role="status" aria-live="polite"></p>
+      <div class="bulk">
+        <button type="button" class="link-btn" id="marcar">Marcar todos os exibidos</button>
+        <button type="button" class="link-btn" id="limpar" hidden>Limpar seleção</button>
+      </div>
       <ul class="people" id="pessoas"></ul>
+      <p class="sel-conta" id="sel-conta" role="status" aria-live="polite"></p>
+      <button class="btn" id="baixar-varios" type="button" disabled>Baixar selecionados</button>
     </fieldset>
     <button class="btn" id="buscar" type="submit">Buscar certificado</button>
     <p class="status" id="status" role="status" aria-live="polite">Use o nome como está na sua inscrição.</p>
@@ -874,9 +893,14 @@ async function publishToGitHub(api, opts) {
       resName = el('res-nome'), resInfo = el('res-info'), sheets = el('sheets'),
       btnSave = el('baixar'), hint = el('res-dica'), inSenha = el('senha'), inFiltro = el('filtro'), listEl = el('pessoas'),
       listCount = el('lista-conta'), stepNome = el('step-nome'), stepSenha = el('step-senha'), stepLista = el('step-lista'),
-      lede = el('lede'), footMsg = el('foot-msg');
+      lede = el('lede'), footMsg = el('foot-msg'), selOrgao = el('orgao'), campoOrgao = el('campo-orgao'),
+      btnMarcar = el('marcar'), btnLimpar = el('limpar'), selConta = el('sel-conta'), btnVarios = el('baixar-varios');
   var LEDE_NAME = lede.textContent, FOOT_NAME = footMsg.innerHTML, NAME_HELP = 'Use o nome como está na sua inscrição.';
-  var unlocked = {};    // cursos em PDF já abertos: id -> [{name, n, id, key}]
+  var unlocked = {};    // cursos em PDF já abertos: id -> [{name, n, id, key, org}]
+  var selected = {};    // participantes marcados, por curso: id do curso -> {id do arquivo: true}
+  var orgSel = '';      // órgão escolhido no filtro ('' = todos; NO_ORG = sem órgão informado)
+  var shown = [], hitAll = [];   // linhas exibidas e todas as que passam nos filtros
+  var NO_ORG = '\u0001sem-orgao';
   var lastPw = '';      // última senha aceita (só na memória desta página)
 
   var COURSES = [];     // lidos de cursos.json
@@ -921,16 +945,30 @@ async function publishToGitHub(api, opts) {
     var c = courseById(selCourse.value), pdf = !!(c && c.mode === 'pdf'), open = !!(pdf && unlocked[c.id]);
     stepNome.hidden = pdf; stepSenha.hidden = !pdf || open; stepLista.hidden = !open;
     btnSearch.hidden = open; btnSearch.textContent = pdf ? 'Entrar' : 'Buscar certificado';
-    lede.textContent = pdf ? 'Escolha o curso ou evento, entre com a senha e localize o participante pelo nome.' : LEDE_NAME;
+    lede.textContent = pdf ? 'Escolha o curso ou evento, entre com a senha e localize os participantes pelo nome ou pelo órgão.' : LEDE_NAME;
     footMsg.innerHTML = pdf ? '<strong>Não achou o participante?</strong> Confira a grafia no filtro ou fale com a Excelência Educação.' : FOOT_NAME;
-    if (open) { inFiltro.value = ''; renderPeople(c); say('Escolha um nome na lista.'); }
+    if (open) { inFiltro.value = ''; orgSel = ''; fillOrgs(c); renderPeople(c); say('Escolha um nome na lista para ver o certificado, ou marque vários para baixar.'); }
     else if (pdf) { say('Digite a senha para abrir a lista.'); if (lastPw) openCourse(c, lastPw, true); }
     else say(NAME_HELP);
   }
 
   function prepare(items) {
-    return items.map(function (it) { return { name: it[0], n: plainText(it[0]), id: it[1], key: it[2] }; })
+    return items.map(function (it) { return { name: it[0], n: plainText(it[0]), id: it[1], key: it[2], org: String(it[3] || '').replace(/\s+/g, ' ').trim() }; })
       .sort(function (a, b) { return a.name.localeCompare(b.name, 'pt-BR'); });
+  }
+
+  /* órgãos que aparecem na lista, com a quantidade de participantes de cada um */
+  function fillOrgs(c) {
+    var all = unlocked[c.id] || [], counts = {}, semOrg = 0;
+    all.forEach(function (p) { if (p.org) counts[p.org] = (counts[p.org] || 0) + 1; else semOrg++; });
+    var names = Object.keys(counts).sort(function (a, b) { return a.localeCompare(b, 'pt-BR'); });
+    campoOrgao.hidden = !names.length;
+    selOrgao.textContent = '';
+    function add(value, text) { var o = document.createElement('option'); o.value = value; o.textContent = text; selOrgao.appendChild(o); }
+    add('', 'Todos os órgãos (' + all.length + ')');
+    names.forEach(function (n) { add(n, n + ' (' + counts[n] + ')'); });
+    if (semOrg && names.length) add(NO_ORG, 'Sem órgão informado (' + semOrg + ')');
+    selOrgao.value = orgSel;
   }
 
   async function openCourse(c, pw, quiet) {
@@ -951,19 +989,109 @@ async function publishToGitHub(api, opts) {
 
   var LIST_MAX = 300;
   function renderPeople(c) {
-    var all = unlocked[c.id] || [], q = plainText(inFiltro.value).split(/\s+/).filter(Boolean);
-    var hit = all.filter(function (p) { return q.every(function (w) { return p.n.indexOf(w) >= 0; }); });
-    listEl.textContent = '';
-    hit.slice(0, LIST_MAX).forEach(function (p) {
-      var li = document.createElement('li'), b = document.createElement('button');
-      b.type = 'button'; b.className = 'person'; b.textContent = p.name; b.dataset.id = p.id;
-      if (current && current.personId === p.id) b.setAttribute('aria-current', 'true');
-      li.appendChild(b); listEl.appendChild(li);
+    var all = unlocked[c.id] || [], q = plainText(inFiltro.value).split(/\s+/).filter(Boolean), sel = selOf(c);
+    var hit = all.filter(function (p) {
+      if (orgSel === NO_ORG ? p.org : (orgSel && p.org !== orgSel)) return false;
+      return q.every(function (w) { return p.n.indexOf(w) >= 0; });
     });
-    listCount.textContent = hit.length === all.length
-      ? all.length + (all.length === 1 ? ' participante.' : ' participantes.')
+    hitAll = hit; shown = hit.slice(0, LIST_MAX);
+    listEl.textContent = '';
+    shown.forEach(function (p) {
+      var li = document.createElement('li'), lab = document.createElement('label'), box = document.createElement('input'), b = document.createElement('button');
+      lab.className = 'pick'; box.type = 'checkbox'; box.className = 'pick-box'; box.dataset.id = p.id; box.checked = !!sel[p.id];
+      box.setAttribute('aria-label', 'Marcar ' + p.name); lab.appendChild(box);
+      b.type = 'button'; b.className = 'person'; b.dataset.id = p.id; b.appendChild(document.createTextNode(p.name));
+      if (p.org) { var o = document.createElement('span'); o.className = 'org'; o.textContent = p.org; b.appendChild(o); }
+      if (current && current.personId === p.id) b.setAttribute('aria-current', 'true');
+      li.appendChild(lab); li.appendChild(b); listEl.appendChild(li);
+    });
+    var filtered = hit.length !== all.length;
+    listCount.textContent = !hit.length
+      ? (orgSel ? 'Ninguém com esses filtros nesta lista.' : 'Ninguém com esse nome nesta lista.')
+      : !filtered ? all.length + (all.length === 1 ? ' participante.' : ' participantes.')
       : hit.length + ' de ' + all.length + ' participantes' + (hit.length > LIST_MAX ? ' (mostrando ' + LIST_MAX + '; digite mais letras para achar)' : '') + '.';
-    if (!hit.length) listCount.textContent = 'Ninguém com esse nome nesta lista.';
+    updateBulk(c);
+  }
+
+  function selOf(c) { return selected[c.id] || (selected[c.id] = {}); }
+
+  /* quem será baixado: os marcados; sem nenhum marcado, todos os do órgão escolhido */
+  function downloadTargets(c) {
+    var sel = selOf(c), all = unlocked[c.id] || [];
+    var marked = all.filter(function (p) { return sel[p.id]; });
+    if (marked.length) return { list: marked, marked: true };
+    return { list: orgSel ? hitAll : [], marked: false };
+  }
+
+  function updateBulk(c) {
+    var sel = selOf(c), n = Object.keys(sel).length, t = downloadTargets(c);
+    var allShown = shown.length > 0 && shown.every(function (p) { return sel[p.id]; });
+    btnMarcar.textContent = allShown ? 'Desmarcar os exibidos' : 'Marcar todos os exibidos';
+    btnMarcar.disabled = !shown.length;
+    btnLimpar.hidden = !n;
+    btnVarios.disabled = !t.list.length || busyMany;
+    btnVarios.textContent = busyMany ? btnVarios.textContent
+      : t.marked ? 'Baixar selecionados (' + t.list.length + ')'
+      : orgSel && t.list.length ? 'Baixar todos deste órgão (' + t.list.length + ')'
+      : 'Baixar selecionados';
+    selConta.textContent = n ? n + (n === 1 ? ' participante marcado.' : ' participantes marcados.')
+      : 'Marque um ou mais participantes, ou escolha um órgão, para baixar vários certificados de uma vez.';
+  }
+
+  var busyMany = false;
+  function safeName(s, max) {
+    s = String(s).replace(/[\\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '');
+    return s.length > (max || 150) ? s.slice(0, max || 150).trim() : s;
+  }
+
+  async function fetchPdfBytes(c, p) {
+    var resp = await fetch(c.dir + 'pdfs/' + p.id + '.bin');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return openFile(new Uint8Array(await resp.arrayBuffer()), p.key);
+  }
+
+  /* um participante: o PDF original; vários: um ZIP com os PDFs originais (em pastas por órgão quando há mais de um) */
+  async function downloadMany(c, people) {
+    if (!people.length || busyMany) return;
+    busyMany = true; btnVarios.disabled = true;
+    var label = btnVarios.textContent, base = c.fileName || ('Certificado - ' + c.name);
+    try {
+      var blob, filename;
+      if (people.length === 1) {
+        say('Preparando o certificado…'); btnVarios.textContent = 'Preparando…';
+        blob = new Blob([await fetchPdfBytes(c, people[0])], { type: 'application/pdf' });
+        filename = safeName(base + ' - ' + people[0].name) + '.pdf';
+      } else {
+        var orgs = {}; people.forEach(function (p) { orgs[p.org || ''] = true; });
+        var folders = Object.keys(orgs).length > 1, files = new Array(people.length), done = 0, next = 0, used = {};
+        var worker = async function () {
+          while (next < people.length) {
+            var i = next++, p = people[i];
+            files[i] = await fetchPdfBytes(c, p);
+            done++;
+            btnVarios.textContent = 'Preparando… ' + done + ' de ' + people.length;
+            say('Preparando os certificados… ' + done + ' de ' + people.length);
+          }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        var entries = people.map(function (p, i) {
+          var nm = safeName(base + ' - ' + p.name), path = (folders ? safeName(p.org || 'Sem órgão informado', 60) + '/' : '') + nm, k = 2, cand = path;
+          while (used[cand.toLowerCase()]) cand = path + ' (' + (k++) + ')';
+          used[cand.toLowerCase()] = true;
+          return { name: cand + '.pdf', data: files[i] };
+        });
+        blob = makeZip(entries);
+        filename = (!folders && people[0].org ? safeName('Certificados - ' + people[0].org, 120)
+                    : safeName(base.replace(/^Certificado\b/, 'Certificados') + ' - ' + people.length + ' certificados', 120)) + '.zip';
+      }
+      await saveBlob(blob, filename);
+      say(people.length === 1 ? 'Certificado baixado.' : 'ZIP baixado com ' + people.length + ' certificados.');
+    } catch (e) {
+      if (!e || e.code !== 'declined') say('Não foi possível baixar agora. Verifique a conexão e tente de novo.', true);
+      else say('Download cancelado.');
+    } finally {
+      busyMany = false; btnVarios.textContent = label; updateBulk(c);
+    }
   }
 
   function load(path, kind) {
@@ -1136,6 +1264,18 @@ async function publishToGitHub(api, opts) {
     return Promise.resolve(null);
   }
 
+  async function saveBlob(blob, filename) {
+    var cap = await downloadsCapability();
+    if (cap) {
+      await cap.save({ filename: filename, data: blob });
+    } else {
+      var url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+    }
+  }
+
   async function savePdf() {
     if (!current) return;
     var label = btnSave.textContent;
@@ -1151,16 +1291,7 @@ async function publishToGitHub(api, opts) {
           { bytes: new Uint8Array(parts[1]), w: current.backSize[0], h: current.backSize[1] }
         ], title);
       }
-      var filename = title + '.pdf';
-      var cap = await downloadsCapability();
-      if (cap) {
-        await cap.save({ filename: filename, data: pdf });
-      } else {
-        var url = URL.createObjectURL(pdf), a = document.createElement('a');
-        a.href = url; a.download = filename;
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
-      }
+      await saveBlob(pdf, title + '.pdf');
       hint.textContent = 'PDF baixado com todas as páginas. Se o download não começou, toque e segure (ou clique com o ' +
         'botão direito) em cada página para salvar a imagem.';
     } catch (e) {
@@ -1176,6 +1307,22 @@ async function publishToGitHub(api, opts) {
 
   selCourse.addEventListener('change', function () { showCourseInfo(); clearResult(); applyMode(); });
   inFiltro.addEventListener('input', function () { var c = courseById(selCourse.value); if (c && unlocked[c.id]) renderPeople(c); });
+  selOrgao.addEventListener('change', function () { var c = courseById(selCourse.value); orgSel = selOrgao.value; if (c && unlocked[c.id]) renderPeople(c); });
+  listEl.addEventListener('change', function (ev) {
+    var box = ev.target.closest('.pick-box'), c = courseById(selCourse.value);
+    if (!box || !c) return;
+    var sel = selOf(c);
+    if (box.checked) sel[box.dataset.id] = true; else delete sel[box.dataset.id];
+    updateBulk(c);
+  });
+  btnMarcar.addEventListener('click', function () {
+    var c = courseById(selCourse.value); if (!c || !shown.length) return;
+    var sel = selOf(c), all = shown.every(function (p) { return sel[p.id]; });
+    shown.forEach(function (p) { if (all) delete sel[p.id]; else sel[p.id] = true; });
+    renderPeople(c);
+  });
+  btnLimpar.addEventListener('click', function () { var c = courseById(selCourse.value); if (!c) return; selected[c.id] = {}; renderPeople(c); });
+  btnVarios.addEventListener('click', function () { var c = courseById(selCourse.value); if (c) downloadMany(c, downloadTargets(c).list); });
   listEl.addEventListener('click', async function (ev) {
     var b = ev.target.closest('.person'), c = courseById(selCourse.value);
     if (!b || !c) return;
