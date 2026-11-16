@@ -202,7 +202,6 @@ h2 {
   max-width: 100%;
   width: 100%;
   height: auto;
-  aspect-ratio: 2970 / 2100;
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 0.375rem;
@@ -279,17 +278,8 @@ h2 {
         <button class="btn" id="baixar" type="button">Baixar certificado em PDF</button>
       </div>
     </div>
-    <p class="hint" id="res-dica">O PDF tem as duas páginas. Se o download não começar, toque e segure (ou clique com o botão direito) em cada página para salvar a imagem.</p>
-    <div class="sheets">
-      <figure class="sheet">
-        <img id="pag1" alt="Página 1 do certificado, com o nome do participante">
-        <figcaption>Página 1</figcaption>
-      </figure>
-      <figure class="sheet">
-        <img id="pag2" alt="Página 2 do certificado, com as palestras e oficinas">
-        <figcaption id="pag2-legenda">Página 2</figcaption>
-      </figure>
-    </div>
+    <p class="hint" id="res-dica">O PDF tem todas as páginas. Se o download não começar, toque e segure (ou clique com o botão direito) em cada página para salvar a imagem.</p>
+    <div class="sheets" id="sheets"></div>
   </section>
 
   <footer class="foot">
@@ -419,30 +409,29 @@ function parseList(text) {
 
 function utf8Len(s) { return new TextEncoder().encode(s).length; }
 
-/* lists: [{ver, label, text}] -> {people, issues, perVer}. Quem tem erro fica de fora; aviso não tira ninguém. */
-function analyzePeople(lists, upper) {
+/* rows: [{ver, label, name, email, ref}] -> {people, issues, perVer}. Quem tem erro fica de fora; aviso não tira ninguém. */
+function analyzeRows(rows, upper, msgs) {
+  msgs = msgs || {};
   var people = [], issues = [], seen = {}, perVer = {};
-  lists.forEach(function (L) {
-    perVer[L.ver] = 0;
-    parseList(L.text).forEach(function (row) {
-      var name = row.name.replace(/\s+/g, ' ').trim();
-      if (upper) name = name.toLocaleUpperCase('pt-BR');
-      var tokens = nameTokens(name);
-      var info = { ver: L.ver, label: L.label, name: name, email: row.email };
-      var bad = function (level, msg) { issues.push({ level: level, ver: L.ver, label: L.label, name: name, msg: msg }); };
-      if (tokens.length < 2) { bad('erro', 'Só uma palavra: a busca pede nome e sobrenome, então esta pessoa ficaria sem certificado.'); return; }
-      if (utf8Len(name) > PAD_LARGE - 40) { bad('erro', 'Nome longo demais.'); return; }
-      var fk = tokens.join(' ');
-      if (seen[fk]) {
-        if (seen[fk].ver === L.ver) bad('aviso', 'Nome repetido na mesma lista: foi mantido uma vez só.');
-        else bad('erro', 'Aparece em duas listas (' + seen[fk].label + ' e ' + L.label + '): foi mantido em ' + seen[fk].label + '.');
-        return;
-      }
-      seen[fk] = { ver: L.ver, label: L.label };
-      info.tokens = tokens; info.fk = fk;
-      people.push(info);
-      perVer[L.ver]++;
-    });
+  rows.forEach(function (row) {
+    perVer[row.ver] = perVer[row.ver] || 0;
+    var name = String(row.name).replace(/\s+/g, ' ').trim();
+    if (upper) name = name.toLocaleUpperCase('pt-BR');
+    var tokens = nameTokens(name);
+    var info = { ver: row.ver, label: row.label, name: name, email: row.email || '', ref: row.ref };
+    var bad = function (level, msg) { issues.push({ level: level, ver: row.ver, label: row.label, name: name, msg: msg, ref: row.ref }); };
+    if (tokens.length < 2) { bad('erro', 'Só uma palavra: a busca pede nome e sobrenome, então esta pessoa ficaria sem certificado.'); return; }
+    if (utf8Len(name) > PAD_LARGE - 80) { bad('erro', 'Nome longo demais.'); return; }
+    var fk = tokens.join(' ');
+    if (seen[fk]) {
+      if (seen[fk].group === row.group) bad('aviso', msgs.dupSame || 'Nome repetido na mesma lista: foi mantido uma vez só.');
+      else bad('erro', msgs.dupOther ? msgs.dupOther(seen[fk].label, row.label) : 'Aparece em duas listas (' + seen[fk].label + ' e ' + row.label + '): foi mantido em ' + seen[fk].label + '.');
+      return;
+    }
+    seen[fk] = { group: row.group, label: row.label };
+    info.tokens = tokens; info.fk = fk;
+    people.push(info);
+    perVer[row.ver]++;
   });
   var firstLast = {};
   people.forEach(function (p, i) {
@@ -462,6 +451,17 @@ function analyzePeople(lists, upper) {
     });
   });
   return { people: people, issues: issues, perVer: perVer };
+}
+
+/* lists: [{ver, label, text}] (texto colado ou CSV) -> mesma saída de analyzeRows */
+function analyzePeople(lists, upper) {
+  var rows = [];
+  lists.forEach(function (L) {
+    parseList(L.text).forEach(function (r) { rows.push({ ver: L.ver, label: L.label, group: L.ver, name: r.name, email: r.email }); });
+  });
+  var out = analyzeRows(rows, upper);
+  lists.forEach(function (L) { if (out.perVer[L.ver] === undefined) out.perVer[L.ver] = 0; });
+  return out;
 }
 
 function slugify(s) {
@@ -691,13 +691,144 @@ function makeZip(files) {
   return new Blob(parts.concat(central, [end]), { type: 'application/zip' });
 }
 
+/* ---------- PDFs prontos: um arquivo criptografado por pessoa ---------- */
+
+function b64url(bytes) { return bytesToB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function fromB64url(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return b64ToBytes(s); }
+function randomFileId() { return toHex(crypto.getRandomValues(new Uint8Array(8))); }
+function randomFileKey() { return b64url(crypto.getRandomValues(new Uint8Array(32))); }
+
+/* bytes -> iv (12) + AES-GCM. A chave só existe no registro protegido pelo nome da pessoa. */
+async function sealFile(bytes, keyB64url) {
+  var key = await crypto.subtle.importKey('raw', fromB64url(keyB64url), 'AES-GCM', false, ['encrypt']);
+  var iv = crypto.getRandomValues(new Uint8Array(12));
+  var ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, bytes));
+  var out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  return out;
+}
+async function openFile(data, keyB64url) {
+  var key = await crypto.subtle.importKey('raw', fromB64url(keyB64url), 'AES-GCM', false, ['decrypt']);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: data.subarray(0, 12) }, key, data.subarray(12)));
+}
+
+/* Linhas de texto de uma página (itens do pdf.js) na ordem de leitura. */
+function linesFromItems(items) {
+  var rows = [];
+  items.forEach(function (it) {
+    if (!it.str || !it.str.trim()) return;
+    var y = it.transform[5], row = null;
+    for (var i = 0; i < rows.length; i++) if (Math.abs(rows[i].y - y) < 2.5) { row = rows[i]; break; }
+    if (!row) { row = { y: y, parts: [] }; rows.push(row); }
+    row.parts.push({ x: it.transform[4], s: it.str });
+  });
+  rows.sort(function (a, b) { return b.y - a.y; });
+  return rows.map(function (r) { return r.parts.sort(function (a, b) { return a.x - b.x; }).map(function (p) { return p.s; }).join(' ').replace(/\s+/g, ' ').trim(); });
+}
+
+function plainText(s) { return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim(); }
+
+/* O texto do certificado traz "Certificamos que" e, na linha seguinte, o nome. */
+function nameFromLines(lines) {
+  for (var i = 0; i < lines.length; i++) {
+    if (!/^certificamos que\b/.test(plainText(lines[i]))) continue;
+    var rest = lines[i].replace(/^\s*certificamos\s+que\s*/i, '').trim();
+    if (rest) return rest;
+    for (var j = i + 1; j < lines.length && j <= i + 3; j++) {
+      var s = lines[j].trim();
+      if (!s) continue;
+      if (/^(participou|concluiu|por haver|pela|pelo|que|realizou)\b/.test(plainText(s))) break;
+      return s;
+    }
+  }
+  return '';
+}
+
+/* "Certificado - MARIA SILVA.pdf" -> "MARIA SILVA"; códigos e números não servem. */
+function nameFromFileName(fn) {
+  var s = String(fn).replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').replace(/^\s*certificado\s*[-–:]?\s*/i, '').trim();
+  /* só vale se o nome estiver separado por espaços (hífen sem espaço é nome de arquivo qualquer) e sem números */
+  return /\d/.test(s) || !/\s/.test(s) || nameTokens(s).length < 2 ? '' : s;
+}
+
+/* ---------- leitor de ZIP (métodos 0 e 8) ---------- */
+
+async function readZip(buffer) {
+  var u8 = new Uint8Array(buffer), dv = new DataView(buffer), i = u8.length - 22;
+  while (i >= 0 && dv.getUint32(i, true) !== 0x06054b50) i--;
+  if (i < 0) throw new Error('arquivo ZIP inválido');
+  var count = dv.getUint16(i + 10, true), p = dv.getUint32(i + 16, true), out = [];
+  for (var n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('ZIP danificado');
+    var flags = dv.getUint16(p + 8, true), method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true),
+        nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true), lho = dv.getUint32(p + 42, true);
+    var name = new TextDecoder(flags & 0x800 ? 'utf-8' : 'utf-8').decode(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + elen + clen;
+    if (name.slice(-1) === '/') continue;
+    var start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true), raw = u8.subarray(start, start + csize), data;
+    if (method === 0) data = raw.slice();
+    else if (method === 8) {
+      var ds = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      data = new Uint8Array(await new Response(ds).arrayBuffer());
+    } else continue;
+    out.push({ name: name, data: data });
+  }
+  return out;
+}
+
+/* ---------- publicar no GitHub (um commit só) ---------- */
+
+async function gitBlobSha(bytes) {
+  var head = new TextEncoder().encode('blob ' + bytes.length + '\0'), all = new Uint8Array(head.length + bytes.length);
+  all.set(head); all.set(bytes, head.length);
+  return toHex(new Uint8Array(await crypto.subtle.digest('SHA-1', all)));
+}
+
+/* api(método, caminho, corpo) -> JSON. opts: {owner, repo, branch, files:[{name,data}], keep:[caminhos], prefixes:[pastas a limpar], message, onProgress} */
+async function publishToGitHub(api, opts) {
+  var base = '/repos/' + opts.owner + '/' + opts.repo, say = opts.onProgress || function () {};
+  say('Lendo o repositório…');
+  var ref = await api('GET', base + '/git/ref/heads/' + opts.branch);
+  var commit = await api('GET', base + '/git/commits/' + ref.object.sha);
+  var tree = await api('GET', base + '/git/trees/' + commit.tree.sha + '?recursive=1');
+  if (tree.truncated) throw new Error('repositório grande demais para esta publicação');
+  var existing = {};
+  tree.tree.forEach(function (e) { if (e.type === 'blob') existing[e.path] = e.sha; });
+  var entries = [], todo = [], names = {}, skipped = 0, deleted = 0;
+  for (var i = 0; i < opts.files.length; i++) {
+    var f = opts.files[i]; names[f.name] = 1;
+    var sha = await gitBlobSha(f.data);
+    if (existing[f.name] === sha) skipped++; else todo.push(f);
+  }
+  (opts.keep || []).forEach(function (k) { names[k] = 1; });
+  var done = 0, next = 0;
+  async function worker() {
+    while (next < todo.length) {
+      var f = todo[next++];
+      var blob = await api('POST', base + '/git/blobs', { content: bytesToB64(f.data), encoding: 'base64' });
+      entries.push({ path: f.name, mode: '100644', type: 'blob', sha: blob.sha });
+      say('Enviando arquivos… ' + (++done) + ' de ' + todo.length);
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  Object.keys(existing).forEach(function (path) {
+    if (names[path] || !(opts.prefixes || []).some(function (pre) { return path.indexOf(pre) === 0; })) return;
+    entries.push({ path: path, mode: '100644', type: 'blob', sha: null }); deleted++;
+  });
+  if (!entries.length) return { unchanged: true, skipped: skipped };
+  say('Gravando…');
+  var newTree = await api('POST', base + '/git/trees', { base_tree: commit.tree.sha, tree: entries });
+  var newCommit = await api('POST', base + '/git/commits', { message: opts.message, tree: newTree.sha, parents: [ref.object.sha] });
+  await api('PATCH', base + '/git/refs/heads/' + opts.branch, { sha: newCommit.sha });
+  return { commit: newCommit.sha, uploaded: todo.length, skipped: skipped, deleted: deleted };
+}
+
   /* core:end */
 
   var el = function (id) { return document.getElementById(id); };
   var form = el('busca'), selCourse = el('curso'), courseInfo = el('curso-info'), inNome = el('nome'),
       inSobrenome = el('sobrenome'), btnSearch = el('buscar'), statusEl = el('status'), result = el('resultado'),
-      resName = el('res-nome'), resInfo = el('res-info'), img1 = el('pag1'), img2 = el('pag2'),
-      cap2 = el('pag2-legenda'), btnSave = el('baixar'), hint = el('res-dica');
+      resName = el('res-nome'), resInfo = el('res-info'), sheets = el('sheets'),
+      btnSave = el('baixar'), hint = el('res-dica');
 
   var COURSES = [];     // lidos de cursos.json
   var SITE = {};
@@ -751,8 +882,56 @@ function makeZip(files) {
     urls = [];
     current = null;
     result.hidden = true;
-    img1.removeAttribute('src');
-    img2.removeAttribute('src');
+    sheets.textContent = '';
+  }
+
+  /* Mostra as páginas: items = [{url, caption, alt}] */
+  function showSheets(items) {
+    sheets.textContent = '';
+    items.forEach(function (it) {
+      var fig = document.createElement('figure'), im = document.createElement('img'), cap = document.createElement('figcaption');
+      fig.className = 'sheet'; im.src = it.url; im.alt = it.alt; cap.textContent = it.caption;
+      if (it.w && it.h) im.style.aspectRatio = it.w + ' / ' + it.h;
+      fig.appendChild(im); fig.appendChild(cap); sheets.appendChild(fig);
+    });
+  }
+
+  /* PDFs do sistema credenciado: a prévia usa o pdf.js, guardado junto do site (pasta vendor). */
+  var pdfjsReady = null;
+  function loadPdfJs() {
+    if (!pdfjsReady) pdfjsReady = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = 'vendor/pdf.min.js';
+      s.onload = function () { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js'; resolve(window.pdfjsLib); };
+      s.onerror = function () { pdfjsReady = null; reject(new Error('pdf.js')); };
+      document.head.appendChild(s);
+    });
+    return pdfjsReady;
+  }
+
+  async function showPdfCertificate(course, found) {
+    var dot = found.ver.indexOf('.'), fileId = found.ver.slice(0, dot), key = found.ver.slice(dot + 1);
+    say('Preparando o certificado…');
+    var sealed = new Uint8Array(await (await load(course.dir + 'pdfs/' + fileId + '.bin')).arrayBuffer());
+    var bytes = await openFile(sealed, key);
+    var pdfjs = await loadPdfJs();
+    var doc = await pdfjs.getDocument({ data: bytes.slice(), standardFontDataUrl: 'vendor/standard_fonts/', isEvalSupported: false }).promise;
+    var items = [];
+    for (var n = 1; n <= doc.numPages; n++) {
+      var page = await doc.getPage(n), v1 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: Math.min(2.5, 1500 / v1.width) });
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      var jpeg = await canvasToJpeg(canvas, 0.9), url = URL.createObjectURL(jpeg);
+      urls.push(url);
+      items.push({ url: url, caption: 'Página ' + n + (doc.numPages > 1 ? ' de ' + doc.numPages : ''), alt: 'Página ' + n + ' do certificado de ' + found.name, w: canvas.width, h: canvas.height });
+    }
+    showSheets(items);
+    resName.textContent = found.name;
+    resInfo.textContent = course.name;
+    current = { course: course, name: found.name, pdfBytes: bytes };
+    result.hidden = false;
+    say('Certificado encontrado.');
   }
 
   function closeForm(message) {
@@ -814,6 +993,11 @@ function makeZip(files) {
         say('Há mais de um participante com esse nome e sobrenome. Digite o nome completo, como na inscrição.', true);
         return;
       }
+      if (found.status === 'found' && course.mode === 'pdf') {
+        await showPdfCertificate(course, found);
+        result.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+        return;
+      }
       if (found.status !== 'found' || !course.backs[found.ver]) {
         say('Não encontramos certificado para esse nome em ' + course.name + '. Confira a grafia e tente com o nome ' +
             'completo, como na inscrição. O certificado é emitido para quem cumpriu a presença mínima. Dúvidas: ' +
@@ -826,12 +1010,13 @@ function makeZip(files) {
       var back = await toImage(files[1]);
       var coverUrl = URL.createObjectURL(cover.jpeg);
       urls.push(coverUrl, back.url);
-      img1.src = coverUrl;
-      img2.src = back.url;
       var label = (course.backLabel && course.backLabel[found.ver]) || '';
+      showSheets([
+        { url: coverUrl, caption: 'Página 1', alt: 'Página 1 do certificado, com o nome do participante', w: cover.w, h: cover.h },
+        { url: back.url, caption: 'Página 2' + (label ? ' · ' + label : ''), alt: 'Página 2 do certificado, com as palestras e oficinas', w: back.im.naturalWidth, h: back.im.naturalHeight }
+      ]);
       resName.textContent = found.name;
       resInfo.textContent = course.name + (label ? ' · ' + label : '');
-      cap2.textContent = 'Página 2' + (label ? ' · ' + label : '');
       current = { course: course, name: found.name, coverJpeg: cover.jpeg, coverSize: [cover.w, cover.h],
                   backBlob: files[1], backSize: [back.im.naturalWidth, back.im.naturalHeight] };
       result.hidden = false;
@@ -860,12 +1045,15 @@ function makeZip(files) {
     btnSave.disabled = true;
     btnSave.textContent = 'Gerando PDF…';
     try {
-      var parts = await Promise.all([current.coverJpeg.arrayBuffer(), current.backBlob.arrayBuffer()]);
-      var title = current.course.fileName + ' - ' + current.name;
-      var pdf = makePdf([
-        { bytes: new Uint8Array(parts[0]), w: current.coverSize[0], h: current.coverSize[1] },
-        { bytes: new Uint8Array(parts[1]), w: current.backSize[0], h: current.backSize[1] }
-      ], title);
+      var title = (current.course.fileName || ('Certificado - ' + current.course.name)) + ' - ' + current.name, pdf;
+      if (current.pdfBytes) pdf = new Blob([current.pdfBytes], { type: 'application/pdf' });   /* o PDF original, sem alterações */
+      else {
+        var parts = await Promise.all([current.coverJpeg.arrayBuffer(), current.backBlob.arrayBuffer()]);
+        pdf = makePdf([
+          { bytes: new Uint8Array(parts[0]), w: current.coverSize[0], h: current.coverSize[1] },
+          { bytes: new Uint8Array(parts[1]), w: current.backSize[0], h: current.backSize[1] }
+        ], title);
+      }
       var filename = title + '.pdf';
       var cap = await downloadsCapability();
       if (cap) {
@@ -876,7 +1064,7 @@ function makeZip(files) {
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
       }
-      hint.textContent = 'PDF gerado com as duas páginas. Se o download não começou, toque e segure (ou clique com o ' +
+      hint.textContent = 'PDF baixado com todas as páginas. Se o download não começou, toque e segure (ou clique com o ' +
         'botão direito) em cada página para salvar a imagem.';
     } catch (e) {
       if (!e || e.code !== 'declined') {
