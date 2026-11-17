@@ -14,6 +14,15 @@
    "lista": "lista.json",
    "mode": "pdf",
    "fileName": "Certificado - Seminário de Obras 2026"
+  },
+  {
+   "id": "controle-interno-2026",
+   "name": "Controle Interno Municipal – Atribuições conforme IN nº 08/2021 e IN nº 09/2024",
+   "info": "Goiânia-GO · 16 e 17 de novembro de 2026 · 16 horas/aula",
+   "dir": "cursos/controle-interno-2026/",
+   "lista": "lista.json",
+   "mode": "pdf",
+   "fileName": "Certificado - Controle Interno Municipal"
   }
  ]
 }

@@ -945,7 +945,7 @@ async function publishToGitHub(api, opts) {
     var c = courseById(selCourse.value), pdf = !!(c && c.mode === 'pdf'), open = !!(pdf && unlocked[c.id]);
     stepNome.hidden = pdf; stepSenha.hidden = !pdf || open; stepLista.hidden = !open;
     btnSearch.hidden = open; btnSearch.textContent = pdf ? 'Entrar' : 'Buscar certificado';
-    lede.textContent = pdf ? 'Escolha o curso ou evento, entre com a senha e localize os participantes pelo nome ou pelo órgão.' : LEDE_NAME;
+    lede.textContent = pdf ? 'Escolha o curso ou evento, entre com a senha e localize os participantes.' : LEDE_NAME;
     footMsg.innerHTML = pdf ? '<strong>Não achou o participante?</strong> Confira a grafia no filtro ou fale com a Excelência Educação.' : FOOT_NAME;
     if (open) { inFiltro.value = ''; orgSel = ''; fillOrgs(c); renderPeople(c); say('Escolha um nome na lista para ver o certificado, ou marque vários para baixar.'); }
     else if (pdf) { say('Digite a senha para abrir a lista.'); if (lastPw) openCourse(c, lastPw, true); }
@@ -1035,6 +1035,7 @@ async function publishToGitHub(api, opts) {
       : orgSel && t.list.length ? 'Baixar todos deste órgão (' + t.list.length + ')'
       : 'Baixar selecionados';
     selConta.textContent = n ? n + (n === 1 ? ' participante marcado.' : ' participantes marcados.')
+      : campoOrgao.hidden ? 'Marque um ou mais participantes para baixar vários certificados de uma vez.'
       : 'Marque um ou mais participantes, ou escolha um órgão, para baixar vários certificados de uma vez.';
   }
 
